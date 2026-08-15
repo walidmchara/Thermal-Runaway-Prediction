@@ -1,0 +1,41 @@
+seed: 42
+
+data:
+  csv_path: data/raw/thermal_runaway.csv
+  target_column: Severity_Index
+  test_fraction: 0.20
+  validation_fraction: 0.20
+
+features:
+  categorical:
+    - Manufacturer
+    - Cell_Description
+    - Geometry
+    - Trigger_Mechanism
+    - Bottom_Vent
+  numeric:
+    - Capacity
+    - Gravimetric_Energy_Density
+    - Volumetric_Energy_Density
+
+model:
+  hidden_size: 128
+  num_layers: 3
+  dropout: 0.20
+
+training:
+  epochs: 200
+  batch_size: 32
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  patience: 20
+
+catboost:
+  iterations: 500
+  depth: 6
+  learning_rate: 0.03
+  loss_function: RMSE
+  verbose: false
+
+output:
+  directory: results
