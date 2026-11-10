@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 import random
 from pathlib import Path
@@ -19,13 +20,14 @@ from torch.utils.data import DataLoader
 from src.dataset import TabularDataset
 from src.models.mlp import MLPRegressor
 from src.preprocessing import load_dataset, build_preprocessor
+from training_recovery import EpochCheckpoint
 
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-def main(config_path):
+def main(config_path, checkpoint_dir=None, resume=False):
     with open(config_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
@@ -91,8 +93,17 @@ def main(config_path):
     out.mkdir(parents=True, exist_ok=True)
     best_path = out / "mlp_best.pt"
 
-    best, stale, history = float("inf"), 0, []
-    for epoch in range(1, int(cfg["training"]["epochs"]) + 1):
+    recovery=EpochCheckpoint(checkpoint_dir or out/"recovery",{
+        "cfg":cfg,"data_file":str(dc["csv_path"]),"data_bytes":Path(dc["csv_path"]).stat().st_size
+    })
+    stateful={"model":model,"optimizer":opt}
+    best, stale, history, best_state, start_epoch = float("inf"), 0, [], None, 0
+    if resume:
+        restored=recovery.restore(stateful,device=device)
+        start_epoch=restored["epoch"];best=restored["best"]
+        stale=restored["stale"];best_state=restored["best_state"];history=restored["history"]
+        print(f"Resuming after epoch {start_epoch}")
+    for epoch in range(start_epoch+1, int(cfg["training"]["epochs"]) + 1):
         model.train()
         train_losses = []
         for x, y in tr_loader:
@@ -118,15 +129,17 @@ def main(config_path):
 
         if va_loss < best:
             best, stale = va_loss, 0
-            torch.save({"model_state": model.state_dict(), "input_size": x_train.shape[1]}, best_path)
+            best_state=deepcopy(model.state_dict())
         else:
             stale += 1
-            if stale >= int(cfg["training"]["patience"]):
-                print("Early stopping.")
-                break
+        recovery.save(epoch,stateful,{"best":best,"stale":stale,"best_state":best_state,"history":history})
+        if stale >= int(cfg["training"]["patience"]):
+            print("Early stopping.")
+            break
 
-    ckpt = torch.load(best_path, map_location=device)
-    model.load_state_dict(ckpt["model_state"])
+    if best_state is None: raise RuntimeError("No validation checkpoint")
+    torch.save({"model_state":best_state,"input_size":x_train.shape[1]},best_path)
+    model.load_state_dict(best_state)
     model.eval()
 
     with torch.no_grad():
@@ -165,5 +178,7 @@ def main(config_path):
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--config", default="configs/thermal.yaml")
+    p.add_argument("--checkpoint-dir",help="Persistent recovery path")
+    p.add_argument("--resume",action="store_true")
     args = p.parse_args()
-    main(args.config)
+    main(args.config,args.checkpoint_dir,args.resume)
